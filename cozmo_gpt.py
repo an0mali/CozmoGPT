@@ -83,13 +83,11 @@ class CozmoGpt(object):
         self.allow_response_timer.start()
         #self.thread = threading.Thread(target=self.cozmo_converse)
         cozmo.run_program(self.set_initial_head_angle)
-        self.thread = threading.Thread(target=self.main)
-        try:
-            self.thread.start()
+        #self.thread = threading.Thread(target=self.main)
+        #self.thread.start()
             #self.cozmo_converse()
-        except KeyboardInterrupt:
-            self.thread.stop()
             #asyncio.run(self.explore())
+        self.main()
 
     def set_initial_head_angle(self, robot: cozmo.robot.Robot):
         robot.set_head_angle(degrees(15)).wait_for_completed()
@@ -102,6 +100,7 @@ class CozmoGpt(object):
         #task = asyncio.create_task(self.cozmo_converse())
         while True:
             self.explore()
+            time.sleep(1)
         #thead = threading.Thread(target=asyncio.run(self.cozmo_converse()))
         #asyncio.run(self.explore())
 
@@ -119,7 +118,6 @@ class CozmoGpt(object):
 
         ###Listen on mic for noise, if noise turn on STT and return result
         while True:
-            try:
                 print("Listening for STT")
                 #asyncio.run(self.listen_for_mic_input())
                 self.listen_for_mic_input()#listens to mic until volume thresh is above THRESHOLD
@@ -150,13 +148,11 @@ class CozmoGpt(object):
                     self.allow_response_timer.cancel()
                     self.allow_response_timer = threading.Timer(60.0, self.set_allow_response_false)
                     self.allow_response_timer.start()
-            except KeyboardInterrupt:
-                break
 
     def set_allow_response_false(self):
         self.allow_cozmo_response = False
         self.is_idle = True
-        asyncio.run(self.explore())
+        #self.explore()
 
     def cozmo_actions(self):
         #For ququed action execution?

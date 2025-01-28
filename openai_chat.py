@@ -74,7 +74,7 @@ class OpenAiManager:
 
         print("[yellow]\nAsking ChatGPT a question...")
         plus_pic_mes = copy.deepcopy(self.chat_history)
-        plus_pic_mes.append({"role": "user", "content": [{"type": "text", "text": "text"}, {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{bimage}"}}]})
+        plus_pic_mes.append({"role": "user", "content": [{"type": "text", "text": prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{bimage}"}}]})
         completion = self.client.chat.completions.create(
           model="gpt-4o",
           #messages=self.chat_history
