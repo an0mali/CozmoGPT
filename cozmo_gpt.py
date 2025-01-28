@@ -273,6 +273,7 @@ class CozmoGpt(object):
         robot.camera.image_stream_enabled = True
         robot.world.wait_for(cozmo.world.EvtNewCameraImage)
         robot.camera.image_stream_enabled = False
+        time.sleep(0.1)#give time for image to save
 
     async def cozmo_view(self):
         print("Cozmo view go!")
