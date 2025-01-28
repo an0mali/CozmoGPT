@@ -25,7 +25,7 @@ class CozmoGpt(object):
     def __init__(self, name):
 
         self.name = name
-        self.robot = cozmo.robot.Robot
+        self.robot = None
 
         pcore = personality_core.Personality_Core()
         ###Cozmo personality vars###
@@ -50,7 +50,7 @@ class CozmoGpt(object):
         self.is_idle = True
 
         ###Cozmo chaning variables ### Weird workarounds for cozmo function calls
-        self.speech = "TEST ALL THE THINGS"
+        self.speech = "TEST ALL THE THINGS"#this can be deleted, no longer used
 
         ###ChatGPT###
 
@@ -78,19 +78,31 @@ class CozmoGpt(object):
         self.BACKUP_FILE = "ChatHistoryBackup.txt"
         
         #asyncio.run(self.main())
-        cozmo.run_program(self.cozmo_capture_image)
+       # cozmo.run_program(self.cozmo_capture_image)
         #start no response timer so he wil explore if not spoken to
         self.allow_response_timer.start()
         #self.thread = threading.Thread(target=self.cozmo_converse)
-        cozmo.run_program(self.set_initial_head_angle)
+       # cozmo.run_program(self.set_initial_head_angle)
+
         #self.thread = threading.Thread(target=self.main)
         #self.thread.start()
             #self.cozmo_converse()
             #asyncio.run(self.explore())
+
+        #self.main()
+
+    def cozmo_main(self, robot: cozmo.robot.Robot):
+        
+        self.robot = robot
+        self.set_initial_head_angle_test()
+        print("Cozmo main is init")
         self.main()
 
     def set_initial_head_angle(self, robot: cozmo.robot.Robot):
         robot.set_head_angle(degrees(15)).wait_for_completed()
+
+    def set_initial_head_angle_test(self):
+        self.robot.set_head_angle(degrees(15)).wait_for_completed()
 
     def main(self):
         #not really used tbh
@@ -106,7 +118,8 @@ class CozmoGpt(object):
 
     def explore(self):
         print("Starting to explore")
-        cozmo.run_program(self.cozmo_capture_image)
+        #cozmo.run_program(self.cozmo_capture_image)
+        self.cozmo_capture_image()
         b64_image = self.get_b64_image()
         openai_result = self.openai_manager.chat_with_history(self.sight_core, b64_image)
         speech = self.parse_gpt_response(openai_result)
@@ -158,7 +171,7 @@ class CozmoGpt(object):
         #For ququed action execution?
         
         #Capture image
-        cozmo.run_program(self.cozmo_capture_image)
+        self.cozmo_capture_image()
         self.execute_cozmo_actions()
     
     def parse_gpt_response(self,text):
@@ -188,10 +201,12 @@ class CozmoGpt(object):
             #for each item in array, we need to call a command_run on cozmo
             for action in actions_array:
                 self.exec_action = action
-                cozmo.run_program(self.execute_action)
+                self.execute_action()
+                #cozmo.run_program(self.execute_action)
             self.actions = False
 
-    def execute_action(self, robot: cozmo.robot.Robot):
+    def execute_action(self):
+        robot = self.robot
         #Should call cozmo to run the string format action command
         eval(self.exec_action)
 
@@ -251,8 +266,8 @@ class CozmoGpt(object):
         pil_image.save("cozmo_image.png")
         print("Image captured and saved as cozmo_image.png")
 
-    def cozmo_capture_image(self, robot: cozmo.robot.Robot):
-       
+    def cozmo_capture_image(self):
+        robot = self.robot
         robot.camera.color_image_enabled = True
         robot.world.add_event_handler(cozmo.world.EvtNewCameraImage, self.on_new_camera_image)
         robot.camera.image_stream_enabled = True
@@ -261,7 +276,8 @@ class CozmoGpt(object):
 
     async def cozmo_view(self):
         print("Cozmo view go!")
-        task = asyncio.create_task(cozmo.run_program(self.cozmo_keepalive, use_3d_viewer=True))
+        #task = asyncio.create_task(cozmo.run_program(self.cozmo_keepalive, use_3d_viewer=True))
+        self.cozmo_keepalive(use_3d_viewer=True)
         print("Cozmo view async")
 
     def cozmo_keepalive(self, robot):
@@ -272,15 +288,16 @@ class CozmoGpt(object):
             pass
 
     def cozmo_say(self, text="POGGIES"):
-        self.speech = text
-        cozmo.run_program(self.cozmo_tts)
+        self.robot.say_text(text,use_cozmo_voice=self.cozmo_voice, voice_pitch=self.voice_pitch, duration_scalar=(1.0/(self.speech_rate / 100.0))).wait_for_completed()
+        #cozmo.run_program(self.cozmo_tts)
 
-    def cozmo_tts(self, robot: cozmo.robot.Robot):
+    def cozmo_tts(self):
+        #deprecated
         #Seems cozmo.run_program passes robot object in as first positional arg?
         #Probably not a good idea to async and this is an action cozmo can't simulataneously
 
         #It doesnt seem we can pass args to these run_program calls. So we use self instead!
-        robot.say_text(self.speech,use_cozmo_voice=self.cozmo_voice, voice_pitch=self.voice_pitch, duration_scalar=(1.0/(self.speech_rate / 100.0))).wait_for_completed()
+        self.robot.say_text(self.speech,use_cozmo_voice=self.cozmo_voice, voice_pitch=self.voice_pitch, duration_scalar=(1.0/(self.speech_rate / 100.0))).wait_for_completed()
         
     def set_allow_response_false(self):
         self.allow_cozmo_response = False
@@ -295,3 +312,8 @@ class CozmoGpt(object):
         return personality
 
 cmo = CozmoGpt("Cozmo")
+
+#Can we create object, then pass the main function into cozmo_run_program? This wouild allow robot object to be referenced in self
+cozmo.run_program(cmo.cozmo_main) #yes, yes we can. Duh
+
+exit
