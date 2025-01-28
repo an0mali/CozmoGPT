@@ -17,7 +17,6 @@ import ast
 import personality_core
 
 # Set the logging level to WARNING to reduce verbosity
-logging.basicConfig(level=logging.WARNING)
 
 #Contains Cozmo's functions and controls
 
@@ -82,16 +81,18 @@ class CozmoGpt(object):
         cozmo.run_program(self.cozmo_capture_image)
         #start no response timer so he wil explore if not spoken to
         self.allow_response_timer.start()
-        #asyncio.run(self.cozmo_converse())
-        #asyncio.run(self.main())
-        thread = threading.Thread(target=self.cozmo_converse)
+        #self.thread = threading.Thread(target=self.cozmo_converse)
+        cozmo.run_program(self.set_initial_head_angle)
+        self.thread = threading.Thread(target=self.main)
         try:
-            thread.start()
-            self.main()
+            self.thread.start()
+            #self.cozmo_converse()
         except KeyboardInterrupt:
-            thread.stop()
-            pass
+            self.thread.stop()
             #asyncio.run(self.explore())
+
+    def set_initial_head_angle(self, robot: cozmo.robot.Robot):
+        robot.set_head_angle(degrees(15)).wait_for_completed()
 
     def main(self):
         #not really used tbh
@@ -99,8 +100,8 @@ class CozmoGpt(object):
         #Stuff is currently test only
 
         #task = asyncio.create_task(self.cozmo_converse())
-
-        self.explore()
+        while True:
+            self.explore()
         #thead = threading.Thread(target=asyncio.run(self.cozmo_converse()))
         #asyncio.run(self.explore())
 
@@ -118,36 +119,39 @@ class CozmoGpt(object):
 
         ###Listen on mic for noise, if noise turn on STT and return result
         while True:
-            print("Listening for STT")
-            #asyncio.run(self.listen_for_mic_input())
-            self.listen_for_mic_input()#listens to mic until volume thresh is above THRESHOLD
-            mic_result = self.speechtotext_manager.speechtotext_from_mic_continuous(stream=self.stream)
-            if mic_result == '':
-                print("[red]Did not receive any input from your microphone!")
-                continue
+            try:
+                print("Listening for STT")
+                #asyncio.run(self.listen_for_mic_input())
+                self.listen_for_mic_input()#listens to mic until volume thresh is above THRESHOLD
+                mic_result = self.speechtotext_manager.speechtotext_from_mic_continuous(stream=self.stream)
+                if mic_result == '':
+                    print("[red]Did not receive any input from your microphone!")
+                    continue
 
-            cozmo_mentioned = self.check_cozmo_mentions(mic_result)
-            if cozmo_mentioned:
-                #Set is idle to false so cozmo stops and talks
-                self.is_idle = False
-                #We're going to genrate a prompt for GPT, so grab the recent cozmo image
-                b64_image = self.get_b64_image()
-                #Add sight instruction to prompt
-                 #might be better to add to FIRST_SYSTEM_MESSAGE?
-                mic_result += self.sight_core
-                openai_result = self.openai_manager.chat_with_history(mic_result, b64_image) #Get GPT reult
-                #parse cozmo's response to pull and execute control functions and remove those so theyre not spoken
-                speech = self.parse_gpt_response(openai_result)
-                
-                self.cozmo_say(speech) #have cozmo say it)
-                self.cozmo_actions()
-                
-                #Give a 60 second time window in which cozmo's name doesnt have to be in prompt for him to respond
-                if not self.allow_cozmo_response:
-                    allow_cozmo_response = True
-                self.allow_response_timer.cancel()
-                self.allow_response_timer = threading.Timer(60.0, self.set_allow_response_false)
-                self.allow_response_timer.start()
+                cozmo_mentioned = self.check_cozmo_mentions(mic_result)
+                if cozmo_mentioned:
+                    #Set is idle to false so cozmo stops and talks
+                    self.is_idle = False
+                    #We're going to genrate a prompt for GPT, so grab the recent cozmo image
+                    b64_image = self.get_b64_image()
+                    #Add sight instruction to prompt
+                    #might be better to add to FIRST_SYSTEM_MESSAGE?
+                    mic_result += self.sight_core
+                    openai_result = self.openai_manager.chat_with_history(mic_result, b64_image) #Get GPT reult
+                    #parse cozmo's response to pull and execute control functions and remove those so theyre not spoken
+                    speech = self.parse_gpt_response(openai_result)
+                    
+                    self.cozmo_say(speech) #have cozmo say it)
+                    self.cozmo_actions()
+                    
+                    #Give a 60 second time window in which cozmo's name doesnt have to be in prompt for him to respond
+                    if not self.allow_cozmo_response:
+                        allow_cozmo_response = True
+                    self.allow_response_timer.cancel()
+                    self.allow_response_timer = threading.Timer(60.0, self.set_allow_response_false)
+                    self.allow_response_timer.start()
+            except KeyboardInterrupt:
+                break
 
     def set_allow_response_false(self):
         self.allow_cozmo_response = False
@@ -172,8 +176,9 @@ class CozmoGpt(object):
         #    emotion = parsedtext[1].replace(" ", "")#remove any spaces in prompt
         speech = parsedtext[0]
         if len(parsedtext) > 1:
-            actions = parsedtext[1]
-            actions = actions.replace("cozmo.robot.Robot", "robot")
+            if parsedtext[1] != "":
+                actions = parsedtext[1]
+                actions = actions.replace("cozmo.robot.Robot", "robot")
         
         if actions:
             self.actions = actions
@@ -251,7 +256,8 @@ class CozmoGpt(object):
         print("Image captured and saved as cozmo_image.png")
 
     def cozmo_capture_image(self, robot: cozmo.robot.Robot):
-        robot.set_head_angle(degrees(15)).wait_for_completed()
+       
+        robot.camera.color_image_enabled = True
         robot.world.add_event_handler(cozmo.world.EvtNewCameraImage, self.on_new_camera_image)
         robot.camera.image_stream_enabled = True
         robot.world.wait_for(cozmo.world.EvtNewCameraImage)
