@@ -48,6 +48,9 @@ class CozmoGpt(object):
         self.actions = False
         self.exec_action = ""
         self.is_idle = True
+        self.first_explore = True # used to Take a picture on first explore
+        self.conversation_mode = True #enable conversation mode
+        self.explore_mode = False #disable explore mode, may cause errors if both turned on at same time?
 
         ###Cozmo chaning variables ### Weird workarounds for cozmo function calls
         self.speech = "TEST ALL THE THINGS"#this can be deleted, no longer used
@@ -94,32 +97,32 @@ class CozmoGpt(object):
     def cozmo_main(self, robot: cozmo.robot.Robot):
         
         self.robot = robot
-        self.set_initial_head_angle_test()
+        self.set_initial_pose()
         print("Cozmo main is init")
         self.main()
 
-    def set_initial_head_angle(self, robot: cozmo.robot.Robot):
-        robot.set_head_angle(degrees(15)).wait_for_completed()
-
-    def set_initial_head_angle_test(self):
+    def set_initial_pose(self):
         self.robot.set_head_angle(degrees(15)).wait_for_completed()
+        self.robot.set_lift_height(0.0).wait_for_completed()
 
     def main(self):
         #not really used tbh
         #Main function so we can use asyncio on stuff
         #Stuff is currently test only
-
-        #task = asyncio.create_task(self.cozmo_converse())
-        while True:
-            self.explore()
-            time.sleep(1)
-        #thead = threading.Thread(target=asyncio.run(self.cozmo_converse()))
-        #asyncio.run(self.explore())
+        if self.conversation_mode:
+            self.thread = threading.Thread(target=self.cozmo_converse)
+            self.thread.start()
+            #while True:
+        #    self.explore()
+        #    time.sleep(1)
 
     def explore(self):
         print("Starting to explore")
+        if self.first_explore:
+            self.cozmo_capture_image()
+            self.first_explore = False
         #cozmo.run_program(self.cozmo_capture_image)
-        self.cozmo_capture_image()
+        
         b64_image = self.get_b64_image()
         openai_result = self.openai_manager.chat_with_history(self.sight_core, b64_image)
         speech = self.parse_gpt_response(openai_result)
@@ -157,7 +160,7 @@ class CozmoGpt(object):
                     
                     #Give a 60 second time window in which cozmo's name doesnt have to be in prompt for him to respond
                     if not self.allow_cozmo_response:
-                        allow_cozmo_response = True
+                        self.allow_cozmo_response = True
                     self.allow_response_timer.cancel()
                     self.allow_response_timer = threading.Timer(60.0, self.set_allow_response_false)
                     self.allow_response_timer.start()
@@ -165,14 +168,18 @@ class CozmoGpt(object):
     def set_allow_response_false(self):
         self.allow_cozmo_response = False
         self.is_idle = True
-        #self.explore()
+        #Explroe until cozmo is spoken to again
+        while self.is_idle:
+            self.explore()
+            time.sleep(1)
 
     def cozmo_actions(self):
         #For ququed action execution?
         
         #Capture image
-        self.cozmo_capture_image()
+        
         self.execute_cozmo_actions()
+        self.cozmo_capture_image()
     
     def parse_gpt_response(self,text):
         #Parse prompt to remove sentiment and then set sentiment animation trigger
@@ -197,18 +204,21 @@ class CozmoGpt(object):
     def execute_cozmo_actions(self):
         if self.actions:
         #We take the self.actions, which is an array in the format of a string, and convert it to array
+            #
             actions_array = ast.literal_eval(self.actions)
             #for each item in array, we need to call a command_run on cozmo
             for action in actions_array:
-                self.exec_action = action
-                self.execute_action()
+                if not 'robot' in action:
+                    action = 'robot.' + action
+                self.execute_action(action)
                 #cozmo.run_program(self.execute_action)
             self.actions = False
 
-    def execute_action(self):
+    def execute_action(self, action):
         robot = self.robot
         #Should call cozmo to run the string format action command
-        eval(self.exec_action)
+        #This is dangerous as-is (but fun!), need sanitizers
+        eval(action)
 
 
     def bkup_history(self):
@@ -268,6 +278,8 @@ class CozmoGpt(object):
 
     def cozmo_capture_image(self):
         robot = self.robot
+
+        #black and white seemed to work better, removing cozmos face screen might help get clearer picture?
         robot.camera.color_image_enabled = True
         robot.world.add_event_handler(cozmo.world.EvtNewCameraImage, self.on_new_camera_image)
         robot.camera.image_stream_enabled = True
@@ -275,20 +287,34 @@ class CozmoGpt(object):
         robot.camera.image_stream_enabled = False
         time.sleep(0.1)#give time for image to save
 
-    async def cozmo_view(self):
-        print("Cozmo view go!")
-        #task = asyncio.create_task(cozmo.run_program(self.cozmo_keepalive, use_3d_viewer=True))
-        self.cozmo_keepalive(use_3d_viewer=True)
-        print("Cozmo view async")
+    def process_cozmotss_string(self, text):
+        words = text.split()
+        new_string = ""
+        char_count = 0
 
-    def cozmo_keepalive(self, robot):
-        try:
-            while True:
-                time.sleep(1)
-        except KeyboardInterrupt:
-            pass
+        for word in words:
+            if char_count + len(word) + len(new_string.split()) > 255:  # Adding space
+                break
+            new_string += word + " "
+            char_count += len(word)
+            #Split string on punctioation to avoid cutting off mid sentence
+            if "." in word or "?" in word or "!" in word:
+                break
+
+        new_string = new_string.strip()
+        remaining_string = text[len(new_string):].lstrip()
+
+        return new_string, remaining_string
 
     def cozmo_say(self, text="POGGIES"):
+
+        #Process long response into smaller chunks cozmo can handle by splitting into multiple voice commands
+        while len(text) > 255:
+            text, remaining_text = self.process_cozmotss_string(text)
+            self.robot.say_text(text,use_cozmo_voice=self.cozmo_voice, voice_pitch=self.voice_pitch, duration_scalar=(1.0/(self.speech_rate / 100.0))).wait_for_completed()
+            text = remaining_text
+
+        #we need to do for eacch 255 chars of string, say_text, and iterate until entire string is spoke to get around say_text 255 char limit
         self.robot.say_text(text,use_cozmo_voice=self.cozmo_voice, voice_pitch=self.voice_pitch, duration_scalar=(1.0/(self.speech_rate / 100.0))).wait_for_completed()
         #cozmo.run_program(self.cozmo_tts)
 
@@ -315,6 +341,6 @@ class CozmoGpt(object):
 cmo = CozmoGpt("Cozmo")
 
 #Can we create object, then pass the main function into cozmo_run_program? This wouild allow robot object to be referenced in self
-cozmo.run_program(cmo.cozmo_main) #yes, yes we can. Duh
+cozmo.run_program(cmo.cozmo_main, use_3d_viewer=True) #yes, yes we can. Duh
 
 exit

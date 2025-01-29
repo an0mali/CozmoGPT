@@ -107,7 +107,7 @@ class SpeechToTextManager:
         print(f"\n\nHeres the result we got from contiuous file read!\n\n{final_result}\n\n")
         return final_result
 
-    def speechtotext_from_mic_continuous(self, stop_key='f3', stream=None, CHUNK=1024, THRESHOLD=35):
+    def speechtotext_from_mic_continuous(self, stop_key='f3', stream=None, CHUNK=1024, THRESHOLD=32):
         self.azure_speechrecognizer = speechsdk.SpeechRecognizer(speech_config=self.azure_speechconfig)
 
         done = False
@@ -146,11 +146,12 @@ class SpeechToTextManager:
         result_future.get()  # wait for voidfuture, so we know engine initialization is done.
         print('Continuous Speech Recognition is now running, say something.')
 
+        ###This is absolutely not the best way to do this, but it's a quick and dirty way to get a threshold for when to stop listening.
         cycle = 0
         amp_array = []
         array_len = 24# 100 == ten seconds of sampling
         for x in range(0, array_len):
-            amp_array.append(40)
+            amp_array.append(60)
         while not done:
             #Try to auto detect when to stop listening, going to sample audio un
             
@@ -159,28 +160,20 @@ class SpeechToTextManager:
            # print(audio_data)
             rms_amplitutde = np.sqrt(abs(np.mean(audio_data**2)))
             
-            #Create a sample array of current audio input, 
-            if len(amp_array) < array_len:
-                amp_array.append(rms_amplitutde)
-            else:
-                amp_array[cycle] = rms_amplitutde
-                cycle += 1
-                if cycle > array_len - 1:
-                    cycle = 0
-
-            if len(amp_array) != array_len:
-               # print("Amp array len: " + str(len(amp_array)))
-                time.sleep(0.05)
-                continue
+            #Update array of current audio input, 
+            amp_array[cycle] = rms_amplitutde
+            cycle += 1
+            if cycle > array_len - 1:
+                cycle = 0
 
             avg_thresh = np.mean(amp_array)
             print("AVG Thresh: " + str(avg_thresh))
             if avg_thresh < THRESHOLD:
-                
+                time.sleep(3)
                 self.azure_speechrecognizer.stop_continuous_recognition_async()
                 #give it three seconds to process
                 break
-            time.sleep(0.1)
+            time.sleep(0.2)
             # METHOD 1 - Press the stop key. This is 'p' by default but user can provide different key
            # if keyboard.read_key() == stop_key:
            #     print("\nEnding azure speech recognition\n")
@@ -199,7 +192,6 @@ class SpeechToTextManager:
 
             # No real sample parallel work to do on this thread, so just wait for user to give the signal to stop.
             # Can't exit function or speech_recognizer will go out of scope and be destroyed while running.
-        time.sleep(2)
         final_result = " ".join(all_results).strip()
         print(f"\n\nHeres the result we got!\n\n{final_result}\n\n")
         return final_result

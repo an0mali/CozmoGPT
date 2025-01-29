@@ -73,7 +73,10 @@ class OpenAiManager:
             print(f"Popped a message! New token length is: {num_tokens_from_messages(self.chat_history)}")
 
         print("[yellow]\nAsking ChatGPT a question...")
+        #Appending the image to history causes a token error when tokenizing the message, so we will not append the image to the history
+
         plus_pic_mes = copy.deepcopy(self.chat_history)
+        #plus_pic_mes = self.chat_history
         plus_pic_mes.append({"role": "user", "content": [{"type": "text", "text": prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{bimage}"}}]})
         completion = self.client.chat.completions.create(
           model="gpt-4o",
