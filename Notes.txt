@@ -1,0 +1,5 @@
+Req-
+Pyaudio
+Cozmo
+numpy
+pillow
