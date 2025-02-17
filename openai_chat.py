@@ -1,8 +1,12 @@
 from openai import OpenAI
 import tiktoken
-import os
+#import os
 from rich import print
 import copy
+
+#using 1.55.3
+gpt_model = "gpt-4o"
+reason_effort = "medium"
 
 def num_tokens_from_messages(messages, model='gpt-35-turbo'):
   """Returns the number of tokens used by a list of messages.
@@ -47,7 +51,7 @@ class OpenAiManager:
 
         print("[yellow]\nAsking ChatGPT a question...")
         completion = self.client.chat.completions.create(
-          model="gpt-4o",
+          model=gpt_model,
           messages=chat_question
         )
 
@@ -79,17 +83,20 @@ class OpenAiManager:
         #plus_pic_mes = self.chat_history
         plus_pic_mes.append({"role": "user", "content": [{"type": "text", "text": prompt},{"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{bimage}"}}]})
         completion = self.client.chat.completions.create(
-          model="gpt-4o",
+          model=gpt_model,
           #messages=self.chat_history
+          #reasoning_effort=reason_effort,
           messages = plus_pic_mes
         )
-
         # Add this answer to our chat history
-        self.chat_history.append({"role": completion.choices[0].message.role, "content": completion.choices[0].message.content})
+        
 
         # Process the answer
         openai_answer = completion.choices[0].message.content
         print(f"[green]\n{openai_answer}\n")
+        scrub_movement = openai_answer.split(";;") #Remove cozmo movment actions from chat history, but pass the full response back, this way they arent passed back to prompt
+        self.chat_history.append({"role": completion.choices[0].message.role, "content": scrub_movement[0]})
+
         return openai_answer
    
 

@@ -4,40 +4,52 @@ import os
 from rich import print
 from azure_speech_to_text import SpeechToTextManager
 from openai_chat import OpenAiManager
-import asyncio
+#import asyncio
 import pyaudio #move this to new module?
 import numpy as np
 import threading
 from PIL import Image
 import base64
-from cozmo.util import degrees
-from cozmo.util import distance_mm, speed_mmps
+
 import logging
 import ast
 import personality_core
+import cozmo_ctrl
 
 # Set the logging level to WARNING to reduce verbosity
 
 #Contains Cozmo's functions and controls
+
+####TO DO:
+### Wipe cozmo move actions from text prompt before adding to chat history
+### Figure out logic for simulataneous exploration and conversation
 
 class CozmoGpt(object):
 
     def __init__(self, name):
 
         self.name = name
-        self.robot = None
+        #we can use if not self.robot for non-cozmo debug
+        self.robot = False 
+        #Must be initialized after self.robot is set
+        self.cozmo_ctrl = None 
 
         pcore = personality_core.Personality_Core()
         ###Cozmo personality vars###
-        self.speech_rate = 150
+        self.speech_rate = 250
         self.cozmo_voice = True
-        self.voice_pitch = -1.0
+        self.voice_pitch = -2.0
         ###Load up personality file so they are swappable
         self.personality_core = pcore.personality
         ###Load up sight prompt
         self.sight_core = pcore.perception
+        #Set prompt for when we send GPT new images
+        self.sight_prompt = pcore.sight_prompt
+        self.speech_enabled = False #used for debugging
 
+        #########################
         ###Cozmo control vars####
+        #########################
 
         #Determines is cozmo listens and responds conversationally or if he ignores input that doesn't reference him
         self.allow_cozmo_response = False
@@ -47,26 +59,31 @@ class CozmoGpt(object):
         self.cozmo_explore = False
         self.actions = False
         self.is_idle = True
-        self.first_explore = True # used to Take a picture on first explore
-
-        self.conversation_mode = False #enable conversation mode
+        # Just keeps track of if this is first explorer mode cycle, if so, we take a picture for cozmo's prompt
+        self.first_explore = True 
+         #enable/disable conversation mode
+        self.conversation_mode = False
         #Issue with releasing built-in mic on laptop
 
-        self.explore_mode = True #disable explore mode, may cause errors if both turned on at same time?
+        #disable/enable explore mode, mainly for testing, goal is to have both conversation mode and explore mode run simulataneously
+        self.explore_mode = True 
 
-        ###Cozmo chaning variables ### Weird workarounds for cozmo function calls
-        self.speech = "TEST ALL THE THINGS"#this can be deleted, no longer used
-
+        #############
         ###ChatGPT###
-
+        #############
         #Instance chatgpt object, only needs to run once
         self.openai_manager = openai_manager = OpenAiManager()
-        #Set personality message
-        FIRST_SYSTEM_MESSAGE = {"role": "system", "content": self.personality_core}
-        openai_manager.chat_history.append(FIRST_SYSTEM_MESSAGE)
-        ###
 
+        #Set personality message
+        initial_prompt = self.personality_core
+        if self.explore_mode:
+            initial_prompt += ' ' + self.sight_core
+        FIRST_SYSTEM_MESSAGE = {"role": "system", "content": initial_prompt}
+        openai_manager.chat_history.append(FIRST_SYSTEM_MESSAGE)
+
+        ##################################
         ### Microphone input detection ###
+        ##################################
         self.THRESHOLD = 58
         pa = pyaudio.PyAudio()
         #stream args
@@ -78,48 +95,40 @@ class CozmoGpt(object):
         self.stream = pa.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=self.CHUNK)
         self.speechtotext_manager = SpeechToTextManager()
         ###
-
-        ###BACKUP###
+        
+        ###Chat BACKUP###
         self.BACKUP_FILE = "ChatHistoryBackup.txt"
         
-        #asyncio.run(self.main())
-       # cozmo.run_program(self.cozmo_capture_image)
+
         #start no response timer so he wil explore if not spoken to
         self.allow_response_timer.start()
-        #self.thread = threading.Thread(target=self.cozmo_converse)
-       # cozmo.run_program(self.set_initial_head_angle)
-
-        #self.thread = threading.Thread(target=self.main)
-        #self.thread.start()
-            #self.cozmo_converse()
-            #asyncio.run(self.explore())
-
-        #self.main()
 
     def cozmo_main(self, robot: cozmo.robot.Robot):
+        ### This function passes into cozmo.run_program to get robot object, set in self, and run main thread
+        
+
         #maybe rename to cozmo init
         
         #set robot in self for easy reference
         self.robot = robot
+        #initalize control module
+        self.cozmo_ctrl = cozmo_ctrl.Cozmo_Ctrl(self.robot)
 
         #set default head and lift position
-        self.set_initial_pose()
+        self.cozmo_ctrl.set_initial_pose()
 
-        #capture the initial image of the environment
-        self.cozmo_capture_image()
+        #Add event handler for images, we only want to do this once.
+        self.robot.world.add_event_handler(cozmo.world.EvtNewCameraImage, self.on_new_camera_image)
+        
         print("Cozmo main is init")
 
         #start main thread
         self.main()
 
-    def set_initial_pose(self):
-        self.robot.set_head_angle(degrees(15)).wait_for_completed()
-        self.robot.set_lift_height(0.0).wait_for_completed()
-
     def main(self):
-        #not really used tbh
-        #Main function so we can use asyncio on stuff
-        #Stuff is currently test only
+
+        
+        #Run convo mode, explore mode or both
         if self.conversation_mode:
             self.thread = threading.Thread(target=self.cozmo_converse)
             self.thread.start()
@@ -127,16 +136,34 @@ class CozmoGpt(object):
             while True:
                 self.explore()
                 time.sleep(1)
-        #    self.explore()
-        #    time.sleep(1)
+
+    def get_cam_image(self):
+        self.cozmo_capture_image()
+        b64_image = self.get_b64_image()
+        return b64_image
 
     def explore(self):
+        #Cozmo takes pictures of environment to understand it and explores/discusses on his own
         print("Starting to explore")
+
         
-        b64_image = self.get_b64_image()
-        openai_result = self.openai_manager.chat_with_history(self.sight_core, b64_image)
+        #Get image from cam
+        b64_image = self.get_cam_image()
+
+        collisison_prompt = self.cozmo_ctrl.get_collision_prompt()
+        move_history_prompt = self.cozmo_ctrl.get_movement_prompt()
+
+        explore_prompt = self.sight_prompt + collisison_prompt + move_history_prompt
+
+        print("Explore prompt: " + explore_prompt)
+
+        #We should add self.sight_core to first system message instead of adding it here.
+        #Maybe just add "this image is what you currently see"?
+        openai_result = self.openai_manager.chat_with_history(explore_prompt, b64_image)
         speech = self.parse_gpt_response(openai_result)
-        self.cozmo_say(speech) #have cozmo say it)
+        #have cozmo say it
+        self.cozmo_say(speech)
+        #cozmo performs movement actions based on prompt response
         self.cozmo_actions()
 
     def cozmo_converse(self):
@@ -145,16 +172,17 @@ class CozmoGpt(object):
         ###Listen on mic for noise, if noise turn on STT and return result
         while True:
                 print("Listening for STT")
-                #asyncio.run(self.listen_for_mic_input())
-                self.listen_for_mic_input()#listens to mic until volume thresh is above THRESHOLD
+                #listens to mic until volume thresh is above THRESHOLD
+                self.listen_for_mic_input()
                 mic_result = self.speechtotext_manager.speechtotext_from_mic_continuous(stream=self.stream)
                 if mic_result == '':
                     print("[red]Did not receive any input from your microphone!")
                     continue
-
+                
+                #Check if cozmo is spoken to
                 cozmo_mentioned = self.check_cozmo_mentions(mic_result)
                 if cozmo_mentioned:
-                    #Set is idle to false so cozmo stops and talks
+                    #Set is idle to false so cozmo doesn't perform explore function
                     self.is_idle = False
                     #We're going to genrate a prompt for GPT, so grab the recent cozmo image
                     b64_image = self.get_b64_image()
@@ -189,7 +217,7 @@ class CozmoGpt(object):
         #Capture image
         
         self.execute_cozmo_actions()
-        self.cozmo_capture_image()
+        
     
     def parse_gpt_response(self,text):
         #Parse prompt to remove sentiment and then set sentiment animation trigger
@@ -199,18 +227,17 @@ class CozmoGpt(object):
         #Cozmo prompt is inconsistent in obeying "no space after ;;" rule, so we need to account for that
         #small changes to the prompt are causing large changes in result
         parsedtext = ''
-        if ";; " in text:
-            parsedtext = text.split(";; ")
-        else:
-            parsedtext = text.split(";;")
+        #if ";; " in text:
+        parsedtext = text.split(";; ")
+        parsedtext = parsedtext[0].split(";;")
 
         #used in old implemenation
         #if len(parsedtext) > 1:
         #    emotion = parsedtext[1].replace(" ", "")#remove any spaces in prompt
         speech = parsedtext[0]
         if len(parsedtext) > 1:
-            if parsedtext[1] != "":
-                actions = parsedtext[1]
+            if parsedtext[1] != []:
+                actions = str(parsedtext[1])
                 actions = actions.replace("cozmo.robot.Robot", "robot")
         
         if actions:
@@ -220,26 +247,24 @@ class CozmoGpt(object):
 
     def execute_cozmo_actions(self):
         if self.actions:
+            #Enable env reactions allows cozmo to better detect ledges and collisions, but we need to pass this into prompt
+            #Enable environmental reactions, this may cause bugs in movement
+            self.robot.enable_all_reaction_triggers(True) 
         #We take the self.actions, which is an array in the format of a string, and convert it to array
-            #
-            actions_array = ast.literal_eval(self.actions)
-            #for each item in array, we need to call a command_run on cozmo
-            for action in actions_array:
-                if not 'robot' in action:
-                    action = 'robot.' + action
-                self.execute_action(action)
-                #cozmo.run_program(self.execute_action)
+            try:
+                print("Actions: '" + self.actions + "'")
+                actions_array = ast.literal_eval(self.actions)
+                for action in actions_array:
+                    #Actions array should be ["action string", units]
+                    act = action[0]
+                    unit = action[1]
+                    self.cozmo_ctrl.perform_action(act, unit)
+            except Exception as e:
+                print("ERROR: execute_cozmo_actions: " + str(e))
+            #Disable env reactionsc
+            self.robot.enable_all_reaction_triggers(False)
+
             self.actions = False
-
-    def execute_action(self, action):
-        robot = self.robot
-        #Should call cozmo to run the string format action command
-        #This is dangerous as-is (but fun!), need sanitizers
-        try:
-            eval(action)
-        except Exception as e:
-            print(f"Error executing cozmo body code: {e}")
-
 
     def bkup_history(self):
         try:
@@ -301,11 +326,11 @@ class CozmoGpt(object):
 
         #black and white seems to work better, removing cozmos face screen might help get clearer picture?
         robot.camera.color_image_enabled = False
-        robot.world.add_event_handler(cozmo.world.EvtNewCameraImage, self.on_new_camera_image)
+       
         robot.camera.image_stream_enabled = True
         robot.world.wait_for(cozmo.world.EvtNewCameraImage)
         robot.camera.image_stream_enabled = False
-        time.sleep(0.1)#give time for image to save
+        time.sleep(1)#give time for image to save
 
     def process_cozmotss_string(self, text):
         #Take string and split it into 255 char chunks, dividing at punctuation to avoid cutting off mid sentence
@@ -328,10 +353,12 @@ class CozmoGpt(object):
         return new_string, remaining_string
 
     def cozmo_say(self, text="POGGIES"):
-
+        if not self.speech_enabled:
+            return
         #Process long response into smaller chunks cozmo can handle by splitting into multiple voice commands
         while len(text) > 255:
             text, remaining_text = self.process_cozmotss_string(text)
+            self.cozmo_ctrl
             self.robot.say_text(text,use_cozmo_voice=self.cozmo_voice, voice_pitch=self.voice_pitch, duration_scalar=(1.0/(self.speech_rate / 100.0))).wait_for_completed()
             text = remaining_text
 
@@ -344,6 +371,7 @@ class CozmoGpt(object):
 
     def load_prompt_core(self, core="personality"):
         #Load personality core file, a prompt that defines strict rules on how to answer questions
+        #Deprecated, use personality_core.py instead
         personality = ""
         script_dir = os.path.dirname(os.path.abspath(__file__))
         personality_path = os.path.join(script_dir, core + ".core")
